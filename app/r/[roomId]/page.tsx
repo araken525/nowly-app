@@ -14,6 +14,8 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const STALE_MS = 7_000; // show only users updated within last 7s
+
 function formatMMSS(totalSeconds: number) {
   const s = Math.max(0, totalSeconds);
   const m = Math.floor(s / 60);
@@ -51,6 +53,8 @@ export default function RoomPage() {
   const mapRef = useRef<MapRef>(null);
   const myMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const otherMarkersRef = useRef<Record<string, mapboxgl.Marker>>({});
+  const otherLastSeenRef = useRef<Record<string, number>>({});
+  const myLastUpsertAtRef = useRef<number>(0);
 
   // ⏰ countdown
   useEffect(() => {
@@ -125,12 +129,41 @@ export default function RoomPage() {
         lng: pos.lng,
         updated_at: new Date().toISOString(),
       });
+      myLastUpsertAtRef.current = Date.now();
     };
 
     upsertOnce();
     const id = setInterval(upsertOnce, 2000);
     return () => clearInterval(id);
   }, [expired, pos, roomId, userId]);
+
+  // 🚪 leave cleanup: remove my row when closing/leaving
+  useEffect(() => {
+    if (expired || !roomId || !userId) return;
+
+    const onPageHide = () => {
+      // don't block navigation; fire and forget
+      void deleteMe();
+    };
+
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide);
+
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide);
+    };
+  }, [expired, roomId, userId]);
+
+  // 🧹 best-effort: delete my row
+  async function deleteMe() {
+    if (!roomId || !userId) return;
+    try {
+      await supabase.from("locations").delete().eq("room_id", roomId).eq("user_id", userId);
+    } catch {
+      // ignore (best-effort)
+    }
+  }
 
   // 📡 realtime subscribe: show other users
   useEffect(() => {
@@ -141,6 +174,7 @@ export default function RoomPage() {
 
     const ensureOtherMarker = (uid: string, lng: number, lat: number) => {
       if (uid === myUserId) return;
+      otherLastSeenRef.current[uid] = Date.now();
 
       const existing = otherMarkersRef.current[uid];
       if (existing) return void existing.setLngLat([lng, lat]);
@@ -169,10 +203,15 @@ export default function RoomPage() {
     (async () => {
       const { data } = await supabase
         .from("locations")
-        .select("user_id, lat, lng")
+        .select("user_id, lat, lng, updated_at")
         .eq("room_id", roomId);
       if (!data) return;
-      for (const row of data) ensureOtherMarker(row.user_id, row.lng, row.lat);
+      for (const row of data) {
+        const t = row.updated_at ? new Date(row.updated_at).getTime() : Date.now();
+        if (Date.now() - t > STALE_MS) continue;
+        otherLastSeenRef.current[row.user_id] = Date.now();
+        ensureOtherMarker(row.user_id, row.lng, row.lat);
+      }
     })();
 
     const channel = supabase
@@ -189,12 +228,33 @@ export default function RoomPage() {
           const row: any = payload.new;
           if (!row?.user_id) return;
           if (typeof row.lng !== "number" || typeof row.lat !== "number") return;
+
+          const t = row.updated_at ? new Date(row.updated_at).getTime() : Date.now();
+          if (Date.now() - t > STALE_MS) {
+            removeOtherMarker(row.user_id);
+            delete otherLastSeenRef.current[row.user_id];
+            return;
+          }
+          otherLastSeenRef.current[row.user_id] = Date.now();
+
           ensureOtherMarker(row.user_id, row.lng, row.lat);
         }
       )
       .subscribe();
 
+    const pruneId = window.setInterval(() => {
+      const now = Date.now();
+      for (const [uid, seen] of Object.entries(otherLastSeenRef.current)) {
+        if (now - seen > STALE_MS) {
+          removeOtherMarker(uid);
+          delete otherLastSeenRef.current[uid];
+        }
+      }
+    }, 2000);
+
     return () => {
+      window.clearInterval(pruneId);
+      otherLastSeenRef.current = {};
       supabase.removeChannel(channel);
       Object.values(otherMarkersRef.current).forEach((m) => m.remove());
       otherMarkersRef.current = {};
@@ -204,6 +264,7 @@ export default function RoomPage() {
   // expire → fade → top
   useEffect(() => {
     if (!expired) return;
+    void deleteMe();
     myMarkerRef.current?.remove();
     myMarkerRef.current = null;
     Object.values(otherMarkersRef.current).forEach((m) => m.remove());
