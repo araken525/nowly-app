@@ -1,13 +1,96 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Zap } from "lucide-react"; // アイコン追加
+
+function IconZap(props: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={props.className}
+    >
+      <path d="M13 2L3 14h7l-1 8 12-14h-7l-1-6z" />
+    </svg>
+  );
+}
+
+function IconLoader(props: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      aria-hidden="true"
+      className={props.className}
+    >
+      <path d="M12 2a10 10 0 1 0 10 10" />
+    </svg>
+  );
+}
+
+function IconUser(props: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+      className={props.className}
+    >
+      <path d="M20 21a8 8 0 0 0-16 0" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  );
+}
+
+function IconCopy(props: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+      className={props.className}
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function IconShare(props: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      aria-hidden="true"
+      className={props.className}
+    >
+      <path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+      <path d="M12 3v12" />
+      <path d="M7 8l5-5 5 5" />
+    </svg>
+  );
+}
 
 export default function Home() {
   const [duration, setDuration] = useState(60);
   const [loading, setLoading] = useState(false);
+  const [nickname, setNickname] = useState("");
+  const [toast, setToast] = useState<string | null>(null);
   const router = useRouter();
+
+  const canShare = useMemo(
+    () => typeof navigator !== "undefined" && typeof (navigator as any).share === "function",
+    []
+  );
 
   const timeOptions = [
     { label: "30分", value: 30 },
@@ -15,12 +98,31 @@ export default function Home() {
     { label: "3時間", value: 180 },
   ];
 
+  // nickname: optional, persist locally
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("nowly:nickname") ?? "";
+      if (saved) setNickname(saved);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("nowly:nickname", nickname);
+    } catch {}
+  }, [nickname]);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 2200);
+  };
+
   const createRoom = async () => {
-    // 振動フィードバック（Android等対応端末のみ）
-    if (typeof navigator !== "undefined" && navigator.vibrate) {
-      navigator.vibrate(50);
-    }
-    
+    // vibration (best-effort)
+    try {
+      if (typeof navigator !== "undefined" && navigator.vibrate) navigator.vibrate(50);
+    } catch {}
+
     setLoading(true);
 
     try {
@@ -33,108 +135,208 @@ export default function Home() {
       if (!res.ok) throw new Error("作成失敗");
 
       const data = await res.json();
-      router.push(data.shareUrl);
-    } catch (error) {
-      console.error(error);
+
+      // absolute URL for sharing
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const sharePath = String(data.shareUrl || "");
+      const url = sharePath.startsWith("http")
+        ? sharePath
+        : `${origin}${sharePath.startsWith("/") ? "" : "/"}${sharePath}`;
+
+      const withName = nickname
+        ? `${url}${url.includes("?") ? "&" : "?"}name=${encodeURIComponent(nickname)}`
+        : url;
+
+      // copy (best-effort)
+      try {
+        await navigator.clipboard.writeText(withName);
+        showToast("招待リンクをコピーしました");
+      } catch {
+        // ignore
+      }
+
+      // share sheet (best-effort)
+      try {
+        if ((navigator as any).share) {
+          await (navigator as any).share({
+            title: "Nowly",
+            text: "いまどこ？（時間で溶ける位置共有）",
+            url: withName,
+          });
+        }
+      } catch {
+        // user cancelled share etc.
+      }
+
+      router.push(sharePath);
+    } catch (e) {
+      console.error(e);
+      showToast("作成に失敗しました");
       setLoading(false);
-      alert("エラーが発生しました");
+    }
+  };
+
+  const manualCopy = async () => {
+    try {
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const url = `${origin}/`;
+      await navigator.clipboard.writeText(url);
+      showToast("リンクをコピーしました");
+    } catch {
+      showToast("コピーできませんでした");
     }
   };
 
   return (
-    // h-[100dvh]: スマホのアドレスバー分を計算した完璧な高さ
-    // touch-none: 引っ張り更新やスクロールを無効化してアプリ化
-    // select-none: 文字選択を無効化（長押しメニュー防止）
     <main className="h-[100dvh] w-full bg-[#08081A] text-white overflow-hidden relative touch-none select-none flex flex-col">
-      
-      {/* --- 背景エフェクト --- */}
-      {/* 上部の光 */}
-      <div className="absolute top-[-20%] left-[-20%] w-[80vw] h-[80vw] bg-blue-600/20 rounded-full blur-[100px] pointer-events-none animate-pulse"></div>
-      {/* 下部の光 */}
-      <div className="absolute bottom-[-10%] right-[-30%] w-[90vw] h-[90vw] bg-purple-600/20 rounded-full blur-[120px] pointer-events-none"></div>
+      {/* background glow */}
+      <div className="absolute top-[-20%] left-[-20%] w-[80vw] h-[80vw] bg-blue-600/20 rounded-full blur-[100px] pointer-events-none animate-pulse" />
+      <div className="absolute bottom-[-10%] right-[-30%] w-[90vw] h-[90vw] bg-purple-600/20 rounded-full blur-[120px] pointer-events-none" />
 
-      {/* --- コンテンツエリア --- */}
+      {/* toast */}
+      {toast && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-black/60 border border-white/10 backdrop-blur-xl text-xs font-semibold">
+          {toast}
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col items-center justify-center relative z-10 px-6 pb-20">
-        
-        {/* タイトルロゴ */}
-        <div className="mb-12 flex flex-col items-center">
+        {/* logo */}
+        <div className="mb-10 flex flex-col items-center">
           <div className="relative">
-             {/* 雷アイコンでエネルギー感を演出 */}
-            <Zap className="w-12 h-12 text-yellow-300 absolute -top-8 -right-6 drop-shadow-[0_0_15px_rgba(253,224,71,0.8)] animate-bounce" style={{ animationDuration: '3s' }} />
+            <IconZap
+              className="w-12 h-12 text-yellow-300 absolute -top-8 -right-6 drop-shadow-[0_0_15px_rgba(253,224,71,0.8)] animate-bounce"
+              style={{ animationDuration: "3s" } as any}
+            />
             <h1 className="text-6xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-cyan-200 to-blue-600 drop-shadow-[0_0_20px_rgba(34,211,238,0.6)]">
               Nowly
             </h1>
           </div>
-          <p className="text-blue-200/60 text-sm font-bold tracking-widest mt-2">
-            LOCATION SHARE
-          </p>
+          <p className="text-blue-200/60 text-sm font-bold tracking-widest mt-2">LOCATION SHARE</p>
+          <p className="text-[11px] text-gray-400/80 mt-3 font-medium">時間で溶ける、位置共有。</p>
         </div>
 
-        {/* 時間選択 (Thumb Zone: 親指が届きやすい位置へ) */}
+        {/* nickname */}
+        <div className="w-full max-w-sm mb-6">
+          <label className="block text-center text-xs text-gray-400 font-bold mb-3 tracking-widest opacity-70">
+            ニックネーム（任意）
+          </label>
+          <div className="flex items-center gap-3 bg-[#0D0D25]/80 backdrop-blur-xl border border-white/10 rounded-2xl px-4 py-3 shadow-2xl">
+            <IconUser className="w-5 h-5 text-blue-200/70" />
+            <input
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="匿名でもOK"
+              className="flex-1 bg-transparent outline-none text-sm font-semibold placeholder:text-gray-500"
+              inputMode="text"
+              autoComplete="nickname"
+              maxLength={18}
+            />
+          </div>
+        </div>
+
+        {/* duration */}
         <div className="w-full max-w-sm space-y-2 mb-8">
-          <p className="text-center text-xs text-gray-400 font-bold mb-3 tracking-widest opacity-70">
-            有効期限を選択
-          </p>
-          
+          <p className="text-center text-xs text-gray-400 font-bold mb-3 tracking-widest opacity-70">有効期限を選択</p>
+
           <div className="flex items-center justify-between bg-[#0D0D25]/80 backdrop-blur-xl border border-white/10 rounded-2xl p-1.5 w-full shadow-2xl">
             {timeOptions.map((item) => (
               <button
                 key={item.value}
                 onClick={() => {
-                   if (navigator.vibrate) navigator.vibrate(10); // 軽い振動
-                   setDuration(item.value);
+                  try {
+                    if (navigator.vibrate) navigator.vibrate(10);
+                  } catch {}
+                  setDuration(item.value);
                 }}
                 className={`relative flex-1 py-3.5 text-center font-bold text-sm rounded-xl transition-all duration-200 ${
-                  duration === item.value
-                    ? "text-white"
-                    : "text-gray-500 active:scale-95"
+                  duration === item.value ? "text-white" : "text-gray-500 active:scale-95"
                 }`}
               >
                 <span className="relative z-10">{item.label}</span>
-                
-                {/* 選ばれている時の背景発光 */}
                 {duration === item.value && (
-                  <div className="absolute inset-0 bg-gray-700/50 rounded-xl border border-white/20 shadow-[inset_0_0_20px_rgba(255,255,255,0.1)]"></div>
+                  <div className="absolute inset-0 bg-gray-700/50 rounded-xl border border-white/20 shadow-[inset_0_0_20px_rgba(255,255,255,0.1)]" />
                 )}
               </button>
             ))}
           </div>
         </div>
 
-        {/* アクションボタン (画面最下部近くに大きく配置) */}
-        <div className="w-full max-w-sm mt-auto">
+        {/* actions */}
+        <div className="w-full max-w-sm mt-auto space-y-3">
           <button
             onClick={createRoom}
             disabled={loading}
-            // active:scale-95 で押した感触を視覚的に表現
-            className={`w-full h-16 rounded-2xl font-black text-xl tracking-widest text-[#08081A] transition-all duration-150 flex items-center justify-center gap-2 relative overflow-hidden group
-              ${
-                loading
-                  ? "bg-gray-700 cursor-wait"
-                  : "bg-[#33E16F] active:scale-[0.97] active:bg-[#2bb556] shadow-[0_0_40px_rgba(51,225,111,0.4)]"
-              }
-            `}
+            className={`w-full h-16 rounded-2xl font-black text-xl tracking-widest text-[#08081A] transition-all duration-150 flex items-center justify-center gap-2 relative overflow-hidden group ${
+              loading
+                ? "bg-gray-700 cursor-wait"
+                : "bg-[#33E16F] active:scale-[0.97] active:bg-[#2bb556] shadow-[0_0_40px_rgba(51,225,111,0.4)]"
+            }`}
           >
-            {/* ボタン内のキラッとする光のエフェクト */}
-            {!loading && (
-              <div className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-[100%] group-hover:animate-[shimmer_1.5s_infinite]"></div>
-            )}
-
+            {!loading && <div className="nowly-shimmer" />}
             {loading ? (
-              <Loader2 className="animate-spin w-6 h-6 text-white" />
+              <IconLoader className="animate-spin w-6 h-6 text-white" />
             ) : (
               <>
                 <span>START</span>
-                <Zap className="w-5 h-5 fill-current" />
+                <IconZap className="w-5 h-5" />
               </>
             )}
           </button>
-          
-          <p className="text-center text-[10px] text-gray-500 mt-4 font-medium">
-            リンクを知っている人だけが参加できます
-          </p>
+
+          {/* optional helper buttons */}
+          <div className="flex gap-3">
+            <button
+              onClick={manualCopy}
+              type="button"
+              className="flex-1 h-12 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl text-xs font-bold tracking-widest text-white/80 active:scale-[0.98] flex items-center justify-center gap-2"
+            >
+              <IconCopy className="w-4 h-4" />
+              COPY
+            </button>
+            <button
+              onClick={() => {
+                if (!canShare) {
+                  showToast("この端末では共有が使えません");
+                  return;
+                }
+                showToast("STARTで招待リンクが作られます");
+              }}
+              type="button"
+              className="flex-1 h-12 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-xl text-xs font-bold tracking-widest text-white/80 active:scale-[0.98] flex items-center justify-center gap-2"
+            >
+              <IconShare className="w-4 h-4" />
+              SHARE
+            </button>
+          </div>
+
+          <p className="text-center text-[10px] text-gray-500 mt-2 font-medium">リンクを知っている人だけが参加できます</p>
         </div>
       </div>
+
+      <style jsx global>{`
+        .nowly-shimmer {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+          transform: translateX(-120%);
+          animation: nowly_shimmer 1.6s infinite;
+          pointer-events: none;
+        }
+        @keyframes nowly_shimmer {
+          0% {
+            transform: translateX(-120%);
+          }
+          60% {
+            transform: translateX(120%);
+          }
+          100% {
+            transform: translateX(120%);
+          }
+        }
+      `}</style>
     </main>
   );
 }
