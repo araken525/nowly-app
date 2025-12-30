@@ -42,12 +42,17 @@ export default function RoomPage() {
   const [expired, setExpired] = useState(initialExpired);
   const [pos, setPos] = useState<{ lat: number; lng: number } | null>(null);
 
+  // ✅ 追加：Mapが読み込まれたか
+  const [mapReady, setMapReady] = useState(false);
+
+  // ✅ 追加：端末ごとに固定される userId（roomごと）
+  const [userId, setUserId] = useState<string>("");
+
   const mapRef = useRef<MapRef>(null);
   const myMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const otherMarkersRef = useRef<Record<string, mapboxgl.Marker>>({});
-  const userIdRef = useRef<string>(crypto.randomUUID());
 
-  // countdown
+  // ⏰ countdown
   useEffect(() => {
     if (expired) return;
     const tick = () => {
@@ -60,7 +65,7 @@ export default function RoomPage() {
     return () => clearInterval(id);
   }, [expiresAt, expired]);
 
-  // location watch
+  // 📍 location watch
   useEffect(() => {
     if (expired) return;
     const id = navigator.geolocation.watchPosition(
@@ -71,13 +76,22 @@ export default function RoomPage() {
     return () => navigator.geolocation.clearWatch(id);
   }, [expired]);
 
-  // camera follow
+  // 🆔 stable user id (client-only)
+  useEffect(() => {
+    const key = `nowly:userId:${roomId}`;
+    const existing = window.localStorage.getItem(key);
+    const id = existing || crypto.randomUUID();
+    if (!existing) window.localStorage.setItem(key, id);
+    setUserId(id);
+  }, [roomId]);
+
+  // 🧭 camera follow
   useEffect(() => {
     if (!pos || !mapRef.current) return;
     mapRef.current.easeTo({ center: [pos.lng, pos.lat], zoom: 15, duration: 500 });
   }, [pos]);
 
-  // my marker
+  // 🟩 my marker
   useEffect(() => {
     if (!pos || !mapRef.current) return;
     const map = mapRef.current.getMap();
@@ -99,11 +113,10 @@ export default function RoomPage() {
     }
   }, [pos]);
 
-  // upsert my location (every 2s)
+  // ☁️ upsert my location (every 2s)
   useEffect(() => {
-    if (expired || !pos) return;
+    if (expired || !pos || !userId) return;
 
-    const userId = userIdRef.current;
     const upsertOnce = async () => {
       await supabase.from("locations").upsert({
         room_id: roomId,
@@ -117,19 +130,19 @@ export default function RoomPage() {
     upsertOnce();
     const id = setInterval(upsertOnce, 2000);
     return () => clearInterval(id);
-  }, [expired, pos, roomId]);
+  }, [expired, pos, roomId, userId]);
 
-  // realtime subscribe: show other users
+  // 📡 realtime subscribe: show other users
   useEffect(() => {
-    if (expired || !roomId || !mapRef.current) return;
+    if (expired || !roomId || !mapReady || !mapRef.current || !userId) return;
 
     const map = mapRef.current.getMap();
-    const myUserId = userIdRef.current;
+    const myUserId = userId;
 
-    const ensureOtherMarker = (userId: string, lng: number, lat: number) => {
-      if (userId === myUserId) return;
+    const ensureOtherMarker = (uid: string, lng: number, lat: number) => {
+      if (uid === myUserId) return;
 
-      const existing = otherMarkersRef.current[userId];
+      const existing = otherMarkersRef.current[uid];
       if (existing) return void existing.setLngLat([lng, lat]);
 
       const el = document.createElement("div");
@@ -140,16 +153,16 @@ export default function RoomPage() {
       el.style.border = "4px solid white";
       el.style.boxShadow = "0 10px 24px rgba(0,0,0,0.55)";
 
-      otherMarkersRef.current[userId] = new mapboxgl.Marker({ element: el })
+      otherMarkersRef.current[uid] = new mapboxgl.Marker({ element: el })
         .setLngLat([lng, lat])
         .addTo(map);
     };
 
-    const removeOtherMarker = (userId: string) => {
-      const mk = otherMarkersRef.current[userId];
+    const removeOtherMarker = (uid: string) => {
+      const mk = otherMarkersRef.current[uid];
       if (!mk) return;
       mk.remove();
-      delete otherMarkersRef.current[userId];
+      delete otherMarkersRef.current[uid];
     };
 
     // initial fetch
@@ -186,7 +199,7 @@ export default function RoomPage() {
       Object.values(otherMarkersRef.current).forEach((m) => m.remove());
       otherMarkersRef.current = {};
     };
-  }, [expired, roomId]);
+  }, [expired, roomId, mapReady, userId]);
 
   // expire → fade → top
   useEffect(() => {
@@ -230,34 +243,12 @@ export default function RoomPage() {
 
       <Map
         ref={mapRef}
+        onLoad={() => setMapReady(true)}
         mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_TOKEN}
         initialViewState={{ latitude: FALLBACK.lat, longitude: FALLBACK.lng, zoom: 11 }}
         mapStyle="mapbox://styles/mapbox/dark-v11"
         style={{ width: "100%", height: "100%" }}
       />
-
-      {expired && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "black",
-            animation: "fade 1.2s ease forwards",
-            zIndex: 100,
-          }}
-        />
-      )}
-
-      <style jsx global>{`
-        @keyframes fade {
-          from {
-            opacity: 0;
-          }
-          to {
-            opacity: 1;
-          }
-        }
-      `}</style>
     </main>
   );
 }
